@@ -38,6 +38,19 @@ uint16_t Crc16Ccitt(const uint8_t* data, size_t len) {
   // 参数：poly=0x1021, init=0xFFFF。
   // CRC 必须覆盖 version..payload 这些字节（即 SOF 之后、crc16 之前的全部内容）。
   // 单元测试依赖这一点。
+  const uint16_t poly = 0x1021;
+  uint16_t init=0xFFFF;
+  for(size_t i=0;i<len;++i){
+    crc ^= static_cast<uint16_t>(data[i]) << 8;
+    for (crc & 0x8000){
+      if(crc & 0x8000){
+        crc = (crc << 1) ^ poly;
+      }else{
+        crc <<= 1;
+      }
+    }
+    return crc;
+  }
   (void)data;
   (void)len;
   return 0;
@@ -68,7 +81,8 @@ std::vector<uint8_t> Encode(const Frame& f) {
   out.insert(out.end(), f.payload.begin(), f.payload.end());
 
   // TODO: 替换为真实的 CRC。
-  AppendLe16(out, 0);
+  uint16_t crc = Crc16Ccitt(out.data() +2,out.size()-2);
+  AppendLe16(out,crc);
   return out;
 }
 
@@ -80,6 +94,51 @@ bool TryDecode(std::vector<uint8_t>& buffer, Frame& out) {
   // - 若不足以组成完整帧：返回 false，并保持 buffer 不变。
   // - 若候选帧 CRC 错误 / 长度非法：丢弃部分字节并继续搜索（必须避免死循环）。
   // - 成功时：填充 out，从 buffer 中擦除已消费的字节，并返回 true。
+  // 1. 搜索 SOF (0xA5 0x5A)
+  auto sof = std::search(buffer.begin(), buffer.end(),std::initializer_list<uint8_t>{kSof0, kSof1});
+  if (sof == buffer.end()) {
+      // 没找到 SOF，清空所有字节（避免死循环）
+      buffer.clear();
+      return false;
+  }
+  // 丢弃前导垃圾字节
+  if (sof != buffer.begin()) {
+      buffer.erase(buffer.begin(), sof);
+  }
+  // 2. 检查最小头部长度是否足够
+  const size_t kMinHeader = 2 + 1 + 2 + 2 + 1; // SOF+version+len+seq+type
+  if (buffer.size() < kMinHeader) return false;
+  // 3. 解析头部字段
+  uint8_t version = buffer[2];
+  if (version != 0x01) {
+      // 版本错误，丢弃当前 SOF，继续搜索
+      buffer.erase(buffer.begin(), buffer.begin() + 2);
+      return TryDecode(buffer, out);
+  }
+  uint16_t payload_len = ReadLe16(buffer, 3);
+  uint16_t seq = ReadLe16(buffer, 5);
+  uint8_t type = buffer[7];
+  // 4. 检查完整帧长度是否足够
+  size_t full_len = kMinHeader + payload_len + 2; // +CRC
+  if (buffer.size() < full_len) return false;
+  // 5. 验证 CRC16
+  const uint8_t* crc_data = buffer.data() + 2;
+  size_t crc_len = 1 + 2 + 2 + 1 + payload_len; // version..payload
+  uint16_t recv_crc = ReadLe16(buffer, kMinHeader + payload_len);
+  uint16_t calc_crc = Crc16Ccitt(crc_data, crc_len);
+  if (calc_crc != recv_crc) {
+      // CRC 错误，丢弃当前 SOF
+      buffer.erase(buffer.begin(), buffer.begin() + 2);
+      return TryDecode(buffer, out);
+  }
+  // 6. 填充输出 Frame
+  out.seq = seq;
+  out.type = type;
+  out.payload.assign(buffer.begin() + 8, buffer.begin() + 8 + payload_len);
+  // 7. 移除已消费的字节
+  buffer.erase(buffer.begin(), buffer.begin() + full_len);
+  return true;
+}
   (void)buffer;
   (void)out;
   return false;
