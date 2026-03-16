@@ -113,7 +113,7 @@ bool TryDecode(std::vector<uint8_t>& buffer, Frame& out) {
   if (version != 0x01) {
       // 版本错误，丢弃当前 SOF，继续搜索
       buffer.erase(buffer.begin(), buffer.begin() + 2);
-      return TryDecode(buffer, out);
+      continue;
   }
   uint16_t payload_len = ReadLe16(buffer, 3);
   uint16_t seq = ReadLe16(buffer, 5);
@@ -129,7 +129,7 @@ bool TryDecode(std::vector<uint8_t>& buffer, Frame& out) {
   if (calc_crc != recv_crc) {
       // CRC 错误，丢弃当前 SOF
       buffer.erase(buffer.begin(), buffer.begin() + 2);
-      return TryDecode(buffer, out);
+      continue;
   }
   // 6. 填充输出 Frame
   out.seq = seq;
@@ -139,8 +139,6 @@ bool TryDecode(std::vector<uint8_t>& buffer, Frame& out) {
   buffer.erase(buffer.begin(), buffer.begin() + full_len);
   return true;
 }
-  (void)buffer;
-  (void)out;
   return false;
 }
 
